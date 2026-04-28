@@ -17,11 +17,11 @@ search:
     - "title^3"
     - "text^1"
   fuzziness: AUTO
-  top_k: 5
+  top_k: 3
 
 # ---- Context Cutter ----
 cutter:
-  concurrency: 8          # how many LLM cuts to run in parallel
+  concurrency: 3          # how many LLM cuts to run in parallel
   max_context_chars: 4000 # truncate each condensed context to this length
 
 # ---- API Server ----

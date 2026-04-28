@@ -91,3 +91,8 @@ async def search(req: SearchRequest):
     except Exception as e:
         logging.exception("Search error")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("api:app", host=HOST, port=PORT, reload=True)

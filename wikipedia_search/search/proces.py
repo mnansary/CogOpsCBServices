@@ -18,9 +18,22 @@ from datetime import datetime, timedelta, timezone
 import yaml
 from openai import AsyncOpenAI
 
+import re
+
 from .cutter import ContextCutterAgent
 from .retriver import init as init_es
 from .retriver import search as es_search
+
+
+def _clean_wikitext(text: str) -> str:
+    """Remove <ref> tags and {{/{| ... }}/|} blocks (templates, infoboxes, tables)."""
+    # Remove <ref>...</ref>
+    text = re.sub(r'<ref[^>]*>.*?</ref>', '', text, flags=re.DOTALL)
+    # Remove {{ ... }} templates (depth-aware)
+    text = re.sub(r'\{\{.*?\}\}', '', text, flags=re.DOTALL)
+    # Remove {| ... |} tables (depth-aware)
+    text = re.sub(r'\{\|.*?\|}', '', text, flags=re.DOTALL)
+    return text
 
 # ---------------------------------------------------------------------------
 # Globals
@@ -109,6 +122,12 @@ async def process(input_data: ProcessInput) -> tuple[list[dict], str]:
 
     combined_context = "\n\n".join(contexts)
 
+    # Truncate to ~1000 words if over
+    _MAX_COMBINED_WORDS = 1000
+    words = combined_context.split()
+    if len(words) > _MAX_COMBINED_WORDS:
+        combined_context = " ".join(words[:_MAX_COMBINED_WORDS]) + "..."
+
     return results, combined_context
 
 
@@ -117,11 +136,12 @@ async def process(input_data: ProcessInput) -> tuple[list[dict], str]:
 # ---------------------------------------------------------------------------
 async def _cut_passage(query: str, passage: dict) -> tuple:
     raw_text = passage["text"]
-    numbered = ContextCutterAgent.format_numbered_lines(raw_text)
+    clean_text = _clean_wikitext(raw_text)
+    numbered = ContextCutterAgent.format_numbered_lines(clean_text)
 
     bd_time = _bd_formatted()
     ranges = await _cutter.get_cut_ranges(query, numbered, bd_time=bd_time)
-    condensed = ContextCutterAgent.apply_cut(raw_text, ranges)
+    condensed = ContextCutterAgent.apply_cut(clean_text, ranges)
     return (passage, ranges, condensed)
 
 
