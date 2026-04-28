@@ -10,47 +10,48 @@ import argparse
 import bz2
 import json
 import os
+import re
 import time
+import urllib.parse
 import xml.etree.ElementTree as ET
 from multiprocessing import Pool, cpu_count
 
 import mwparserfromhell
 
-import re
-import urllib.parse
 
 def fix_links_in_wikitext(text: str) -> str:
     """
-    Fixes two specific issues in wikitext URLs:
-    1. Removes the web.archive.org prefix from archived links.
-    2. Decodes URL-encoded characters (like Bangla text) into a readable format.
+    Fixes wikitext URL issues:
+    1. Removes web.archive.org prefixes from archived links.
+    2. Decodes URL-encoded characters.
+    3. Splits and deduplicates concatenated/malformed URLs where one URL
+       runs directly into another (e.g. url1/path/url2/path).
     """
-    
-    # --- ধাপ ১: web.archive.org লিঙ্ক থেকে আর্কাইভ প্রিফিক্স সরানো ---
-    # এই প্যাটার্নটি 'https://web.archive.org/web/' এরপর যেকোনো সংখ্যা (টাইমস্ট্যাম্প)
-    # এবং তারপর মূল http/https লিঙ্কটি খুঁজে বের করে।
+
+    # Step 1: strip web.archive.org prefix
     archive_pattern = r'https://web.archive.org/web/\d+/(https?://.+)'
-    
-    # re.sub ব্যবহার করে পুরো আর্কাইভ লিঙ্কটিকে শুধুমাত্র মূল লিঙ্ক (captured group 1) দিয়ে প্রতিস্থাপন করা হয়।
-    # r'\1' মানে হলো প্যাটার্নের প্রথম ব্র্যাকেটের ভেতরের অংশটি।
-    text_no_archive = re.sub(archive_pattern, r'\1', text)
-    
-    
-    # --- ধাপ ২: URL-encoded বাংলা টেক্সট ডিকোড করা ---
-    # এই প্যাটার্নটি টেক্সটের মধ্যে থাকা সব http/https লিঙ্ক খুঁজে বের করে।
-    # এটি স্পেস, '|' বা ']' এর মতো ক্যারেক্টার পেলে থেমে যায়, যা উইকিটেক্সটে সাধারণ।
+    text = re.sub(archive_pattern, r'\1', text)
+
+    # Step 2: split concatenated URLs, deduplicate, decode
     url_pattern = r'https?://[^\s|\]\'"]+'
-    
-    # re.sub-এর একটি শক্তিশালী ফিচার হলো রিপ্লেসমেন্টের জন্য একটি ফাংশন ব্যবহার করা।
-    # এখানে, প্রতিটি লিঙ্ক খুঁজে পাওয়ার পর, lambda ফাংশনটি কল করা হয়।
-    # ফাংশনটি urllib.parse.unquote ব্যবহার করে লিঙ্কটিকে ডিকোড করে এবং ডিকোড করা লিঙ্কটি রিটার্ন করে।
-    def decode_match(match):
-        url = match.group(0) # পুরো ম্যাচ হওয়া লিঙ্কটি পাওয়া যায়
-        return urllib.parse.unquote(url) # লিঙ্কটিকে ডিকোড করে রিটার্ন করা হয়
-        
-    fixed_text = re.sub(url_pattern, decode_match, text_no_archive)
-    
-    return fixed_text
+
+    def fix_url_block(match):
+        raw = match.group(0)
+        # Split on embedded second (or later) http(s)://
+        parts = re.split(r'(?<=/)(?=https?://)', raw)
+        seen = set()
+        unique = []
+        for p in parts:
+            decoded = urllib.parse.unquote(p)
+            if decoded and decoded not in seen:
+                seen.add(decoded)
+                unique.append(decoded)
+        # If first part is just a prefix ending with /, take the next one
+        if len(unique) >= 2 and unique[0].endswith('/'):
+            return unique[1]
+        return unique[-1] if unique else raw
+
+    return re.sub(url_pattern, fix_url_block, text)
 
 
 def strip_namespace(tag: str) -> str:
@@ -79,10 +80,10 @@ def is_raw_redirect(text: str) -> bool:
 def article_generator(input_file, min_year):
     """Generates raw article data strictly for pages that pass basic filters."""
     cutoff = f"{min_year}-01-01T00:00:00Z"
-    
+
     with bz2.open(input_file, "rt", encoding="utf-8") as fin:
         context = ET.iterparse(fin, events=("start", "end"))
-        
+
         try:
             _, root = next(context)
         except StopIteration:
@@ -110,11 +111,11 @@ def article_generator(input_file, min_year):
 
                 elif tag == "page":
                     # Fast Pre-filters
-                    if (ns == "0" and text and title and 
-                        is_bengali_title(title) and 
-                        (not last_updated or last_updated >= cutoff) and 
+                    if (ns == "0" and text and title and
+                        is_bengali_title(title) and
+                        (not last_updated or last_updated >= cutoff) and
                         not is_raw_redirect(text)):
-                        
+
                         # Yield raw data to be parsed by the worker pool
                         yield (title, text, page_id, last_updated)
 
@@ -129,7 +130,7 @@ def process_article(raw_data):
     Runs concurrently in the Multiprocessing Pool.
     """
     title, text, page_id, last_updated = raw_data
-    
+
     try:
         parsed = mwparserfromhell.parse(text)
     except Exception:
@@ -139,7 +140,7 @@ def process_article(raw_data):
     sections = parsed.get_sections(include_lead=True, flat=True)
     summary = sections[0].strip_code().strip() if sections else ""
 
-    # Catch any leftover formatted redirects 
+    # Catch any leftover formatted redirects
     if summary.lower().startswith("পুনর্নির্দেশ") or summary.lower().startswith("#redirect"):
         return None
 
@@ -147,8 +148,8 @@ def process_article(raw_data):
     full_text = parsed.strip_code().strip()
     if not full_text:
         return None
-    #### WILL THIS JUST CHNAGE LINK OR THE WHOLE TEXT? ####
-    text=fix_links_in_wikitext(text)
+
+    text = fix_links_in_wikitext(text)
     return {
         "id": page_id,
         "title": title,
@@ -168,30 +169,30 @@ def extract_dump(input_file, output_dir, min_year=2024):
     print(f"Starting multiprocessing pool with {workers} workers...", flush=True)
 
     count = 0
-    
+
     with Pool(processes=workers) as pool:
         raw_gen = article_generator(input_file, min_year)
-        
-        # pool.imap processes in parallel but yields results sequentially 
+
+        # pool.imap processes in parallel but yields results sequentially
         for doc in pool.imap(process_article, raw_gen, chunksize=100):
             if doc:
                 count += 1
-                
+
                 # Calculate the 1000-file grouping bounds
                 folder_index = (count - 1) // 1000
                 lower_bound = (folder_index * 1000) + 1
                 upper_bound = lower_bound + 999
                 subfolder_name = f"{lower_bound}-{upper_bound}"
-                
+
                 subfolder_path = os.path.join(output_dir, subfolder_name)
-                
+
                 # Create the specific sub-folder only when needed
                 if count % 1000 == 1:
                     os.makedirs(subfolder_path, exist_ok=True)
 
                 # Use article count number for filename to avoid OS limits on long Bengali characters
                 fname = f"{count}.json"
-                
+
                 fpath = os.path.join(subfolder_path, fname)
                 with open(fpath, "w", encoding="utf-8") as fout:
                     json.dump(doc, fout, ensure_ascii=False, indent=2)
@@ -224,5 +225,5 @@ if __name__ == "__main__":
         help="Minimum year for last_updated filter (default: 2024)",
     )
     args = parser.parse_args()
-    
+
     extract_dump(args.input, args.output, min_year=args.year)
