@@ -1,0 +1,29 @@
+# -----------------------------------------------------------------
+# Configuration for ChromaDB Ingestion
+# -----------------------------------------------------------------
+
+# Target collection name
+collection_name: "jiggasha_search_collection"
+
+# Input CSV path
+csv_file_path: "/home/vpa/services/CogOpsCBServices/resources/data_jiggasha_processed.csv"
+
+# --- Data Mapping ---
+content_column: "keywords"
+metadata_columns:
+  - "node"
+  - "text"
+
+# --- Embedder Settings ---
+# Overrides for env vars (TRITON_EMBEDDER_URL, etc.)
+embedder:
+  triton_url: "http://localhost:7000"
+  model_name: "gemma_embedding"
+  tokenizer_name: "onnx-community/embeddinggemma-300m-ONNX"
+  triton_output_name: "sentence_embedding"
+  batch_size: 8
+  triton_request_timeout: 480
+
+# --- Ingestion ---
+# Documents per batch (must equal embedder.batch_size)
+batch_size: 8
