@@ -1,0 +1,12 @@
+es:
+  url: http://localhost:10000
+  index: wikipedia
+  timeout: 60
+
+search:
+  fields:
+    - "keywords^5"
+    - "title^3"
+    - "text^1"
+  fuzziness: AUTO
+  top_k: 10
