@@ -1,8 +1,16 @@
+# ---- Elasticsearch ----
 es:
   url: http://localhost:10000
   index: wikipedia
   timeout: 60
 
+# ---- vLLM / LLM ----
+llm:
+  base_url: http://localhost:5000/v1/
+  api_key: "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+  model: "qwen36"
+
+# ---- Search ----
 search:
   fields:
     - "keywords^5"
@@ -10,3 +18,13 @@ search:
     - "text^1"
   fuzziness: AUTO
   top_k: 10
+
+# ---- Context Cutter ----
+cutter:
+  concurrency: 8          # how many LLM cuts to run in parallel
+  max_context_chars: 4000 # truncate each condensed context to this length
+
+# ---- API Server ----
+api:
+  host: 0.0.0.0
+  port: 10001

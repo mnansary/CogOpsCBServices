@@ -1,0 +1,21 @@
+[Unit]
+Description=Wikipedia Search Elastic (FastAPI + uvicorn)
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=vpa
+WorkingDirectory=/home/vpa/services/CogOpsCBServices/wikipedia_search
+ExecStart=/home/vpa/miniconda3/bin/uvicorn api:app --host 0.0.0.0 --port 10001 --log-level info
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/vpa/services/CogOpsCBServices/wikipedia_search
+
+[Install]
+WantedBy=multi-user.target

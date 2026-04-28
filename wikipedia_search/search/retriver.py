@@ -1,34 +1,25 @@
 #!/usr/bin/env python3
 """
-Elasticsearch retriever for Wikipedia articles.
-Config-driven search with boostable fields, fuzziness, and fast keyword matching.
+search/retriver.py — Elasticsearch client + query builder.
 
-Designed to be imported by an async FastAPI service.
+Single source of truth for ES connection, config loading, and search.
+No LLM, no cutter, no pipeline logic.
 """
-from dataclasses import dataclass
+from __future__ import annotations
+
+from typing import Any
+
+import asyncio
 
 import yaml
 from elasticsearch import Elasticsearch
 
-# ---------------------------------------------------------------------------
-# Global state ( initialised by init_es )
-# ---------------------------------------------------------------------------
 es: Elasticsearch | None = None
-_cfg = {}
+_cfg: dict = {}
 
 
-@dataclass
-class SearchConfig:
-    """All tunable search parameters — read from config.yml under `search`."""
-    fields: list[str] = ["keywords^5", "title^3", "text^1"]
-    fuzziness: str = "AUTO"
-    top_k: int = 10
-    min_gram: int = 2
-    max_gram: int = 4
-
-
-def init_es(config_path: str = "config.yml") -> Elasticsearch:
-    """Initialise the ES client and parse search config. Call once at app startup."""
+def init(config_path: str = "config.yml") -> Elasticsearch:
+    """Initialise the ES client and load config. Call once at startup."""
     global es, _cfg
     with open(config_path) as f:
         _cfg = yaml.safe_load(f)
@@ -37,49 +28,45 @@ def init_es(config_path: str = "config.yml") -> Elasticsearch:
     return es
 
 
-def _parse_search_cfg() -> SearchConfig:
-    raw = _cfg.get("search", {})
-    return SearchConfig(
-        fields=raw.get("fields", ["keywords^5", "title^3", "text^1"]),
-        fuzziness=raw.get("fuzziness", "AUTO"),
-        top_k=raw.get("top_k", 10),
-    )
+def _cfg_section(section: str) -> dict:
+    return _cfg.get(section, {})
 
 
-def _build_body(query: str) -> dict:
-    """Build a multi_match search body — no vector needed, pure text search."""
-    sc = _parse_search_cfg()
+def build_search_body(query: str, top_k: int | None = None) -> dict[str, Any]:
+    """Build a multi_match ES query body from config."""
+    search_cfg = _cfg_section("search")
+    fields = search_cfg.get("fields", ["keywords^5", "title^3", "text^1"])
+    fuzziness = search_cfg.get("fuzziness", "AUTO")
+    size = top_k if top_k is not None else search_cfg.get("top_k", 10)
+
     return {
         "query": {
             "multi_match": {
                 "query": query,
-                "fields": sc.fields,
-                "fuzziness": sc.fuzziness,
+                "fields": fields,
+                "fuzziness": fuzziness,
                 "prefix_length": 2,
                 "max_expansions": 50,
                 "minimum_should_match": "2<75%",
             }
         },
-        "size": sc.top_k,
-        "_source": ["title", "url", "text", "keywords"],
+        "size": size,
+        "_source": ["title", "url", "text", "keywords", "last_updated"],
     }
 
 
-async def search(query: str, top_k: int | None = None) -> list[dict]:
+async def search(query: str, index: str | None = None, top_k: int | None = None) -> list[dict]:
     """
-    Async search wrapper for FastAPI.
-    Returns a list of hit dicts with title, url, text (truncated), keywords.
+    Async ES search. Returns hit dicts with title, url, text, keywords, last_updated.
     """
     if es is None:
-        raise RuntimeError("Elasticsearch not initialised — call init_es() first")
+        raise RuntimeError("Elasticsearch not initialised — call init() first")
 
-    if top_k is not None:
-        body = _build_body(query)
-        body["size"] = top_k
-    else:
-        body = _build_body(query)
+    idx = index or _cfg["es"]["index"]
+    body = build_search_body(query, top_k)
 
-    resp = await es.search_async(index=_cfg["es"]["index"], body=body)
+    loop = asyncio.get_running_loop()
+    resp = await loop.run_in_executor(None, lambda: es.search(index=idx, body=body))
 
     results = []
     for hit in resp["hits"]["hits"]:
@@ -87,7 +74,8 @@ async def search(query: str, top_k: int | None = None) -> list[dict]:
         results.append({
             "title": src.get("title", ""),
             "url": src.get("url", ""),
-            "text": (src.get("text", "") or ""),
+            "text": src.get("text") or "",
             "keywords": src.get("keywords", []),
+            "last_updated": src.get("last_updated"),
         })
     return results
